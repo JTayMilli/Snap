@@ -1,7 +1,7 @@
 import random
 from loguru import logger
 from factories import generate_all_cards
-from factories import generate_all_locations
+from location import generate_all_locations
 from ai import AIPlayer
 from display import Displayer
 from turn import Turn
@@ -17,8 +17,8 @@ class Game:
 
         # Initialize players with MC enabled but hidden progress
         self.players = [
-            AIPlayer(self, PLAYER1_ID, all_cards, use_mc=True, show_progress=False),
-            AIPlayer(self, PLAYER2_ID, all_cards, use_mc=True, show_progress=False),
+            AIPlayer(self, PLAYER1_ID, self.all_cards, use_mc=True, show_progress=False),
+            AIPlayer(self, PLAYER2_ID, self.all_cards, use_mc=True, show_progress=False),
         ]
 
         # Prepare locations
