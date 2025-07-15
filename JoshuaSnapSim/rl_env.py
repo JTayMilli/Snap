@@ -24,7 +24,7 @@ def random_policy(state: GameState, player_id: int, action_manager: ActionManage
         return []
         
     play = action_manager.get_play_from_action_id(chosen_action_id)
-    return [play]
+    return [play] if play else []
 
 
 class MarvelSnapEnv:
@@ -61,10 +61,6 @@ class MarvelSnapEnv:
         Since this is a two-player game, this step involves the agent's move
         and the opponent's move.
         """
-        # This is a simplified step function. A full implementation would need
-        # to handle multi-card plays from a single action from the agent.
-        # For now, we assume the agent provides one action_id per turn.
-        
         agent_plays = []
         play = self.action_manager.get_play_from_action_id(action_id)
         if play:
@@ -84,12 +80,20 @@ class MarvelSnapEnv:
         # Determine reward
         terminated = state.game_over
         reward = 0.0
+
+        # --- REWARD SHAPING ---
+        # Add a small penalty for passing the turn (i.e., not playing a card).
+        # This encourages the agent to be active rather than learning a "lazy" policy.
+        if not agent_plays:
+            reward -= 0.01
+        # ----------------------
+
         if terminated:
             if state.winner == self.agent_player_id:
                 reward = 1.0  # Win
             elif state.winner == self.opponent_player_id:
                 reward = -1.0 # Loss
-            # Draw is 0.0
+            # If it's a draw, the reward will be 0.0 (or -0.01 if the agent passed on the last turn)
 
         # Get next state observation and info
         obs = self.vectorizer.vectorize(state, self.agent_player_id)
@@ -97,7 +101,6 @@ class MarvelSnapEnv:
             "action_mask": self.action_manager.get_action_mask(state, self.agent_player_id)
         }
         
-        # `truncated` is for episodes that end due to a time limit, not applicable here.
         truncated = False
         
         return obs, reward, terminated, truncated, info

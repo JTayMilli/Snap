@@ -2,112 +2,88 @@
 
 import random
 import numpy as np
-from typing import List, Tuple
+import torch
+import torch.nn.functional as F
+import os # Import the os module
 
-from game_engine import GameEngine
-from game_state import GameState, Player
-from action_manager import ActionManager, END_TURN_ACTION_ID
+# Import our components
+from rl_env import MarvelSnapEnv
+from action_manager import END_TURN_ACTION_ID
+from neural_net import PolicyValueNet
 
-def get_plays_from_mask(state: GameState, player_id: int, action_manager: ActionManager) -> List[Tuple[int, int]]:
+# --- Get the script's directory to build a robust path ---
+script_dir = os.path.dirname(os.path.abspath(__file__))
+models_dir = os.path.join(script_dir, "saved_models")
+
+# --- CONFIGURATION TO LOAD THE TRAINED MODEL ---
+# Specify just the filename of the trained model you want to use.
+MODEL_FILENAME = "marvel_snap_agent_v5000.pth" 
+TRAINED_MODEL_PATH = os.path.join(models_dir, MODEL_FILENAME)
+
+def run_game_with_ai():
     """
-    A more realistic AI that uses the action mask to make random valid plays.
-    It will select one or more valid moves to perform this turn.
+    Initializes and runs a single game using a TRAINED Policy-Value Network
+    to make decisions.
     """
-    player = state.get_player(player_id)
-    plays = []
-    
-    # Create a copy of the hand to track which cards have been "played" this turn
-    # This is important for multi-card plays
-    available_hand_indices = list(range(len(player.hand)))
-
-    while True:
-        # We need to regenerate the mask each time we decide to play a card,
-        # as our energy changes. A simpler approach for a random AI is to just
-        # pick one valid move and end. For a smarter AI, we'd need a more
-        # complex decision process.
-        
-        # For this random AI, let's just pick one valid action.
-        mask = action_manager.get_action_mask(state, player_id)
-        valid_action_ids = np.where(mask == 1)[0]
-
-        if len(valid_action_ids) == 0 or END_TURN_ACTION_ID in valid_action_ids and random.random() < 0.3:
-             # End turn if no moves left, or randomly decide to end
-            break
-        
-        # Exclude end turn action for selection unless it's the only option
-        play_actions = [aid for aid in valid_action_ids if aid != END_TURN_ACTION_ID]
-        if not play_actions:
-            break
-            
-        chosen_action_id = random.choice(play_actions)
-        play = action_manager.get_play_from_action_id(chosen_action_id)
-        
-        if play:
-            hand_idx, loc_idx = play
-            card = player.hand[hand_idx]
-            
-            # Check if we can still afford it and if the card is available
-            if card.current_cost <= player.energy and hand_idx in available_hand_indices:
-                plays.append(play)
-                player.energy -= card.current_cost
-                available_hand_indices.remove(hand_idx)
-            else:
-                # Can't afford this combo, stop planning
-                break
-        else:
-            # Should not happen if we exclude END_TURN_ACTION_ID
-            break
-            
-    # Restore energy, the engine will handle deduction
-    player.energy = state.turn
-    return plays
-
-
-def print_board_state(state: GameState, engine: GameEngine):
-    """Utility function to print the current state of the board."""
-    print("-" * 30)
-    for i, location in enumerate(state.locations):
-        p0_power = engine.calculate_location_power(location, 0)
-        p1_power = engine.calculate_location_power(location, 1)
-        
-        p0_cards = [f"{card.card_id}({card.current_power})" for card in location.cards[0]]
-        p1_cards = [f"{card.card_id}({card.current_power})" for card in location.cards[1]]
-        
-        print(f"Location {i}: {location.location_id} ({p0_power} vs {p1_power})")
-        print(f"  Player 0: {p0_cards}")
-        print(f"  Player 1: {p1_cards}")
-    print("-" * 30)
-
-
-def run_game():
-    starter_deck = ["wasp", "misty_knight", "shocker", "cyclops", "captain_america", "mr_fantastic", "iron_man", "hulk"] * 2
+    # Define decks for the players
+    starter_deck = [
+        "wasp", "misty_knight", "shocker", "cyclops", 
+        "captain_america", "mr_fantastic", "iron_man", "hulk"
+    ] * 2
     random.shuffle(starter_deck)
     
-    engine = GameEngine(player0_deck=starter_deck[:12], player1_deck=starter_deck[12:])
-    state = engine.game_state
-    action_manager = ActionManager()
+    # 1. Initialize the Environment and the AI Network
+    env = MarvelSnapEnv(deck1=starter_deck[:12], deck2=starter_deck[12:])
+    ai_net = PolicyValueNet()
 
-    print("--- NEW GAME ---")
-    
-    for turn in range(1, 7):
-        print(f"\n--- Turn {turn} ---")
-        state.get_player(0).energy = turn
-        state.get_player(1).energy = turn
-        
-        player0_plays = get_plays_from_mask(state, 0, action_manager)
-        player1_plays = get_plays_from_mask(state, 1, action_manager)
-        
-        print(f"Player 0 plays: {player0_plays}")
-        print(f"Player 1 plays: {player1_plays}")
-
-        engine.process_turn(player0_plays, player1_plays)
-        print_board_state(state, engine)
-
-    print("\n--- GAME OVER ---")
-    if state.winner == -1:
-        print("Result: It's a Draw!")
+    # --- LOAD THE TRAINED WEIGHTS ---
+    if os.path.exists(TRAINED_MODEL_PATH):
+        print(f"Loading trained model from: {TRAINED_MODEL_PATH}")
+        ai_net.load_state_dict(torch.load(TRAINED_MODEL_PATH))
     else:
-        print(f"Result: Player {state.winner} wins!")
+        print(f"WARNING: Model file not found at '{TRAINED_MODEL_PATH}'.")
+        print("Running with an untrained, random AI.")
+    
+    # Set the network to evaluation mode (important for inference)
+    ai_net.eval()
+    # --------------------------------
+
+    # 2. Reset the environment
+    obs, info = env.reset()
+    terminated = False
+    total_reward = 0
+
+    print("\n--- NEW GAME (RUN WITH TRAINED AI) ---")
+    env.render()
+    
+    # 3. Main Game Loop
+    while not terminated:
+        print(f"\n--- Turn {env.engine.game_state.turn} ---")
+        
+        # --- AI Decision Making ---
+        obs_tensor = torch.from_numpy(obs).float().unsqueeze(0)
+        action_mask = torch.from_numpy(info["action_mask"]).float().unsqueeze(0)
+        
+        with torch.no_grad(): # No need for gradients during inference
+            policy_logits, value_estimate = ai_net(obs_tensor)
+            
+        masked_logits = policy_logits.masked_fill(action_mask == 0, -1e9)
+        policy_probs = F.softmax(masked_logits, dim=1)
+        
+        # Instead of sampling, for evaluation we usually take the best move
+        action = torch.argmax(policy_probs).item()
+        
+        # 4. Take a step in the environment
+        obs, reward, terminated, truncated, info = env.step(action)
+        
+        total_reward += reward
+        
+        print(f"AI (Player 0) chose action: {action} (Est. Win Chance: {value_estimate.item():.2f})")
+        env.render()
+
+    # 5. Print Final Result
+    print("\n--- GAME OVER ---")
+    print(f"Final Reward for AI: {total_reward}")
 
 if __name__ == "__main__":
-    run_game()
+    run_game_with_ai()
